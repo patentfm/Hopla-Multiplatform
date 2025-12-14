@@ -36,13 +36,64 @@ This repository contains all major components of the system:
 
 ---
 
-## Technologies (Planned)
+## Technologies
 
-- Bluetooth Low Energy (BLE)
-- Accelerometer-based motion analysis
-- Embedded ARM firmware
-- Cross-platform mobile development (e.g. Flutter)
-- Real-time sensor streaming and game logic
+- **Firmware**: nRF Connect SDK (Zephyr RTOS) for nRF52810
+- **Sensor**: LIS2DH12 accelerometer (I2C)
+- **BLE**: Nordic SoftDevice BLE stack
+- **Mobile**: Flutter with native BLE plugins (iOS CoreBluetooth, Android BLE API)
+- **DFU**: Nordic DFU over BLE for OTA updates
+- **Hardware**: HolyIOT-21014 development board
+
+## Project Structure
+
+```
+hopla/
+├── firmware/          # nRF Connect SDK firmware
+│   ├── src/          # Source code
+│   ├── boards/       # Device tree overlays
+│   └── keys/         # DFU signing keys
+├── app/              # Flutter mobile application
+│   ├── lib/          # Dart code
+│   ├── ios/          # iOS native plugins
+│   └── android/      # Android native plugins
+└── docs/             # Documentation
+```
+
+## Quick Start
+
+### Firmware Setup
+
+1. Install nRF Connect SDK:
+   ```bash
+   pip install west
+   west init -m https://github.com/nrfconnect/sdk-nrf --mr main workspace
+   cd workspace && west update
+   ```
+
+2. Build firmware:
+   ```bash
+   cd firmware
+   ./build.sh
+   ```
+
+3. Flash via DFU (see [docs/flashing_guide.md](docs/flashing_guide.md))
+
+### Mobile App Setup
+
+1. Install Flutter SDK
+2. Get dependencies:
+   ```bash
+   cd app
+   flutter pub get
+   ```
+
+3. Run on device:
+   ```bash
+   flutter run
+   ```
+
+See [docs/flashing_guide.md](docs/flashing_guide.md) for detailed instructions.
 
 ---
 
