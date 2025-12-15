@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -13,6 +15,7 @@ class BleScannerScreen extends StatefulWidget {
 class _BleScannerScreenState extends State<BleScannerScreen> {
   final FlutterReactiveBle _ble = FlutterReactiveBle();
   final Map<String, DiscoveredDevice> _devices = {};
+  StreamSubscription<DiscoveredDevice>? _scanSubscription;
   bool _isScanning = false;
   String? _errorMessage;
   bool _permissionsGranted = false;
@@ -53,32 +56,38 @@ class _BleScannerScreenState extends State<BleScannerScreen> {
       _devices.clear();
     });
 
-    _ble.scanForDevices(
+    _scanSubscription?.cancel();
+    _scanSubscription = _ble
+        .scanForDevices(
       withServices: [],
       scanMode: ScanMode.lowLatency,
       requireLocationServicesEnabled: false,
-    ).listen(
-      (device) {
-        // Filtruj tylko urządzenia zaczynające się od "Hopla!"
-        final deviceName = device.name;
-        if (deviceName.isNotEmpty && deviceName.startsWith('Hopla!')) {
-          setState(() {
-            // Aktualizuj lub dodaj urządzenie (deduplikacja po id)
-            _devices[device.id] = device;
-          });
-        }
-      },
-      onError: (error) {
-        setState(() {
-          _isScanning = false;
-          _errorMessage = 'Błąd skanowania: $error';
-        });
-      },
-    );
+    )
+        .listen(
+          (device) {
+            // Filtruj tylko urządzenia zaczynające się od "Hopla!"
+            final deviceName = device.name;
+            if (deviceName.isNotEmpty && deviceName.startsWith('Hopla!')) {
+              if (!mounted) return;
+              setState(() {
+                // Aktualizuj lub dodaj urządzenie (deduplikacja po id)
+                _devices[device.id] = device;
+              });
+            }
+          },
+          onError: (error) {
+            if (!mounted) return;
+            setState(() {
+              _isScanning = false;
+              _errorMessage = 'Błąd skanowania: $error';
+            });
+          },
+        );
   }
 
   void _stopScan() {
-    _ble.stopScan();
+    _scanSubscription?.cancel();
+    _scanSubscription = null;
     setState(() {
       _isScanning = false;
     });
@@ -86,7 +95,7 @@ class _BleScannerScreenState extends State<BleScannerScreen> {
 
   @override
   void dispose() {
-    _stopScan();
+    _scanSubscription?.cancel();
     super.dispose();
   }
 
@@ -131,7 +140,7 @@ class _BleScannerScreenState extends State<BleScannerScreen> {
                       ),
                 ),
                 const SizedBox(height: 8),
-                if (manufacturerData != null && manufacturerData.isNotEmpty) ...[
+                if (manufacturerData.isNotEmpty) ...[
                   Text(
                     'Manufacturer Data (hex):',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -140,7 +149,7 @@ class _BleScannerScreenState extends State<BleScannerScreen> {
                   ),
                   const SizedBox(height: 4),
                   SelectableText(
-                    HoplaAdvParser.formatManufacturerDataMap(manufacturerData),
+                    HoplaAdvParser.formatManufacturerData(manufacturerData),
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           fontFamily: 'monospace',
                         ),
@@ -183,7 +192,7 @@ class _BleScannerScreenState extends State<BleScannerScreen> {
                   ...device.serviceUuids.map((uuid) => Padding(
                         padding: const EdgeInsets.only(left: 16, bottom: 4),
                         child: Text(
-                          uuid,
+                          uuid.toString(),
                           style: Theme.of(context).textTheme.bodySmall?.copyWith(
                                 fontFamily: 'monospace',
                               ),

@@ -9,8 +9,9 @@ import 'dart:typed_data';
 /// - Offset 5-6: z_mg (int16 LE)
 /// - Offset 7: seq (uint8)
 /// 
-/// flutter_reactive_ble zwraca manufacturerData jako Map<int, Uint8List>,
-/// gdzie klucz to Company ID (0xFFFF dla Hopla!).
+/// `flutter_reactive_ble` / `reactive_ble_platform_interface` zwraca `manufacturerData`
+/// jako `Uint8List`, gdzie pierwsze 2 bajty to Company Identifier Code (little-endian),
+/// a reszta to payload.
 class HoplaAdvData {
   final int? xMg;
   final int? yMg;
@@ -39,33 +40,40 @@ class HoplaAdvParser {
 
   /// Parsuje Manufacturer Specific Data z advertisingu
   /// 
-  /// [manufacturerData] to Map<int, Uint8List> gdzie klucz to Company ID.
-  /// Dla Hopla! szukamy klucza 0xFFFF i parsujemy payload 8 bajtów.
-  static HoplaAdvData? parseManufacturerData(Map<int, Uint8List>? manufacturerData) {
+  /// [manufacturerData] to `Uint8List` gdzie pierwsze 2 bajty to Company ID.
+  /// Dla Hopla! oczekujemy Company ID = 0xFFFF i parsujemy payload 8 bajtów.
+  ///
+  /// Uwaga: jeśli z jakiegoś powodu `manufacturerData` nie zawiera Company ID,
+  /// parser spróbuje potraktować całość jako payload (8 bajtów) dla kompatybilności.
+  static HoplaAdvData? parseManufacturerData(Uint8List? manufacturerData) {
     if (manufacturerData == null || manufacturerData.isEmpty) return null;
 
-    // Szukaj danych dla Company ID Hopla!
-    final hoplaData = manufacturerData[companyId];
-    if (hoplaData == null || hoplaData.isEmpty) return null;
+    final bytes = manufacturerData.toList();
+    if (bytes.length < 8) return null;
 
-    // Konwertuj Uint8List na List<int> dla łatwiejszej pracy
-    final data = hoplaData.toList();
+    int payloadOffset = 0;
+    if (bytes.length >= 10) {
+      final maybeCompanyIdLe = bytes[0] | (bytes[1] << 8);
+      if (maybeCompanyIdLe == companyId) {
+        payloadOffset = 2;
+      }
+    }
 
     // Sprawdź czy payload ma odpowiednią długość (8 bajtów)
-    if (data.length < 8) return null;
+    if (bytes.length - payloadOffset < 8) return null;
 
     // Parsuj zgodnie z BLE_Docs.md
-    final dataType = data[0];
+    final dataType = bytes[payloadOffset + 0];
     if (dataType != 0x01) {
       // Nie jest to typ XYZ
       return null;
     }
 
     // Parsuj int16 LE (little-endian)
-    final xMg = _parseInt16LE(data, 1);
-    final yMg = _parseInt16LE(data, 3);
-    final zMg = _parseInt16LE(data, 5);
-    final seq = data[7];
+    final xMg = _parseInt16LE(bytes, payloadOffset + 1);
+    final yMg = _parseInt16LE(bytes, payloadOffset + 3);
+    final zMg = _parseInt16LE(bytes, payloadOffset + 5);
+    final seq = bytes[payloadOffset + 7];
 
     return HoplaAdvData(
       xMg: xMg,
@@ -101,13 +109,24 @@ class HoplaAdvParser {
     return formatBytesAsHex(data.toList());
   }
 
-  /// Formatuje całą Map<int, Uint8List> jako czytelny string
-  static String formatManufacturerDataMap(Map<int, Uint8List>? data) {
+  /// Formatuje Manufacturer Data (Company ID + payload) jako czytelny string.
+  static String formatManufacturerData(Uint8List? data) {
     if (data == null || data.isEmpty) return 'Brak danych';
-    return data.entries.map((entry) {
-      final companyIdHex = '0x${entry.key.toRadixString(16).padLeft(4, '0').toUpperCase()}';
-      return '$companyIdHex: ${formatUint8ListAsHex(entry.value)}';
-    }).join('\n');
+
+    final bytes = data.toList();
+    if (bytes.length < 2) {
+      return formatBytesAsHex(bytes);
+    }
+
+    final companyIdLe = bytes[0] | (bytes[1] << 8);
+    final companyIdHex = '0x${companyIdLe.toRadixString(16).padLeft(4, '0').toUpperCase()}';
+    final payload = bytes.length > 2 ? Uint8List.fromList(bytes.sublist(2)) : Uint8List(0);
+
+    if (payload.isEmpty) {
+      return 'Company ID: $companyIdHex\nPayload: (pusty)';
+    }
+
+    return 'Company ID: $companyIdHex\nPayload: ${formatUint8ListAsHex(payload)}';
   }
 }
 
