@@ -30,15 +30,19 @@ class _BleScannerScreenState extends State<BleScannerScreen> {
     // Sprawdź i poproś o uprawnienia
     final locationStatus = await Permission.locationWhenInUse.request();
     final bluetoothStatus = await Permission.bluetoothScan.request();
+    final bluetoothConnectStatus = await Permission.bluetoothConnect.request();
     
-    if (locationStatus.isGranted && bluetoothStatus.isGranted) {
+    if (locationStatus.isGranted &&
+        bluetoothStatus.isGranted &&
+        bluetoothConnectStatus.isGranted) {
       setState(() {
         _permissionsGranted = true;
       });
       _startScan();
     } else {
       setState(() {
-        _errorMessage = 'Wymagane są uprawnienia do lokalizacji i Bluetooth';
+        _errorMessage =
+            'Wymagane są uprawnienia do lokalizacji, skanowania i łączenia Bluetooth';
         _permissionsGranted = false;
       });
     }
