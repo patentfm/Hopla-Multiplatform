@@ -33,7 +33,7 @@ This repository contains all major components of the system:
 
 ## Technologies
 
-- **Hardware**: HolyIOT-21014 development board
+- **Hardware**: HolyIOT-21014 development board https://docs.zephyrproject.org/latest/boards/holyiot/holyiot_21014/doc/index.html
 - **Firmware**: DFU_21014_Logger_20240109 for nRF52810
 - **Sensor**: LIS2DH12 accelerometer (I2C)
 - **Mobile**: Flutter with native BLE plugins (iOS CoreBluetooth, Android BLE API)
