@@ -119,18 +119,16 @@ Firmware przechowuje wartości “bazowe” z GATT, ale **faktycznie używa wart
 ### Logs (`0x000B`)
 
 - **Odczyt**: użyj **Read long / Read blob** (w nRF Connect: “Read long”). SoftDevice będzie pytał o kolejne offsety aż urządzenie zwróci 0 bajtów.
-- Jeśli chcesz zacząć od innego miejsca: ustaw `Log Ctrl` komendą `03 <offset_u16_le>` (cursor) i wykonaj “Read long”.
 - **Format**: surowe bajty ASCII; kolejne wpisy są rozdzielone `\\n`.
 - **Pamięć**: to jest **ring buffer w RAM** o rozmiarze `GATT_LOG_BUFFER_SIZE` (domyślnie 1024 B). Po zapełnieniu **najstarsze dane są automatycznie usuwane**.
 
 #### Jak czytać w nRF Connect (praktycznie)
 
 1) (Opcjonalnie) Write do **Log Ctrl**: `02 01` (freeze), żeby log nie zmieniał się w trakcie odczytu.
-2) Write do **Log Ctrl**: `04` (reset cursor = 0).
-3) Na **Logs** użyj **Read long** (apka będzie czytać kolejne offsety aż dostanie 0 bajtów).
+2) Na **Logs** użyj **Read long** (apka będzie czytać kolejne offsety aż dostanie 0 bajtów).
 4) (Opcjonalnie) Write do **Log Ctrl**: `02 00` (unfreeze).
 
-**Uwaga:** jeśli nRF Connect pokazuje “puste pole”, to często znaczy, że urządzenie zwróciło **0 bajtów** (czyli “koniec logów” dla danego kursora/offsetu). Zrób wtedy `04` i ponownie “Read long”.
+**Uwaga:** jeśli nRF Connect pokazuje “puste pole”, to często znaczy, że urządzenie zwróciło **0 bajtów** (czyli “koniec logów”). Zrestartuj urządzenie albo doprowadź do wygenerowania nowych logów i spróbuj ponownie.
 
 #### Jak rozkodować `(0x)` HEX
 
@@ -147,8 +145,6 @@ Komendy (Write):
 - `01` — **clear** (wyczyść logi)
 - `02 00` — **freeze off** (wznów dopisywanie)
 - `02 01` — **freeze on** (zatrzymaj dopisywanie, ułatwia stabilny odczyt)
-- `03 <u16 LE>` — **set cursor** (ustaw pozycję odczytu od “najstarszego” bajtu)
-- `04` — **reset cursor** (ustaw cursor = 0)
 
 
 ## Uwaga o “handle” vs UUID

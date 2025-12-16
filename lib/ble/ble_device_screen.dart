@@ -383,7 +383,12 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
         '- Typ: ASCII bytes (linie zakończone \\n)',
         '- Rozmiar: 0..1024 (ring buffer w RAM; nadpisuje najstarsze)',
         '',
-        'Odczyt (w aplikacji): pobieramy jedną porcję i pokazujemy pierwszą linię.',
+        'Odczyt: Read long / Read blob (offsety 0, 244, 488…), aż urządzenie zwróci 0 bajtów.',
+        '',
+        'Opcjonalnie (stabilny odczyt):',
+        '- Log Ctrl: 02 01 (freeze on)',
+        '- Odczytaj Logs (Read long)',
+        '- Log Ctrl: 02 00 (freeze off)',
       ].join('\n');
     }
     return 'Brak opisu dla tej charakterystyki.';
@@ -577,20 +582,29 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
     await _writeRaw(charId, bytes);
   }
 
-  Future<void> _setLogsCursor(int offset) async {
-    // Log Ctrl command: 03 <u16 LE> — set cursor (position from "oldest" byte)
-    final cmd = Uint8List.fromList([0x03, ...HoplaBleCodec.u16le(offset)]);
-    await _writeRaw(HoplaGattUuids.logCtrl, cmd);
+  Future<void> _logCtrlClear() async {
+    // Log Ctrl command: 01 — clear (wyczyść logi)
+    await _writeRaw(HoplaGattUuids.logCtrl, Uint8List.fromList([0x01]));
   }
 
-  Future<void> _readLogsFirstLine() async {
-    // Simplified: read a single chunk and show only the first line (up to '\n').
+  Future<void> _logCtrlFreezeOn() async {
+    // Log Ctrl command: 02 01 — freeze on (zatrzymaj dopisywanie)
+    await _writeRaw(HoplaGattUuids.logCtrl, Uint8List.fromList([0x02, 0x01]));
+  }
+
+  Future<void> _logCtrlFreezeOff() async {
+    // Log Ctrl command: 02 00 — freeze off (wznów dopisywanie)
+    await _writeRaw(HoplaGattUuids.logCtrl, Uint8List.fromList([0x02, 0x00]));
+  }
+
+  Future<void> _readLogs() async {
+    // Firmware exposes logs as a readable characteristic.
+    // Client should perform "Read long / Read blob" as needed (offsets 0, 244, 488...).
     final bytes = await _readRaw(HoplaGattUuids.logs);
     final text = HoplaBleCodec.readUtf8(bytes);
-    final firstLine = text;
     if (!mounted) return;
     setState(() {
-      _logsText = firstLine.trim().isEmpty ? '(brak / nie odczytano)' : firstLine;
+      _logsText = text.trim().isEmpty ? '(brak / nie odczytano)' : text;
     });
   }
 
@@ -1047,7 +1061,7 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Pobieramy jedną porcję logów i pokazujemy tylko pierwszą linię.',
+              'Odczyt: Read long / Read blob (offsety 0, 244, 488…). Opcjonalnie użyj freeze, żeby log nie zmieniał się w trakcie odczytu.',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey.shade700),
             ),
             const SizedBox(height: 10),
@@ -1056,15 +1070,18 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
               runSpacing: 8,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                Text(
-                  'Cursor:',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey.shade700),
+                OutlinedButton(
+                  onPressed: _busy || !_isConnected ? null : () => _writeField(_logCtrlClear),
+                  child: const Text('Clear (01)'),
                 ),
-                for (var i = 1; i <= 8; i++)
-                  OutlinedButton(
-                    onPressed: _busy || !_isConnected ? null : () => _writeField(() => _setLogsCursor(i)),
-                    child: Text('$i'),
-                  ),
+                OutlinedButton(
+                  onPressed: _busy || !_isConnected ? null : () => _writeField(_logCtrlFreezeOn),
+                  child: const Text('Freeze ON (02 01)'),
+                ),
+                OutlinedButton(
+                  onPressed: _busy || !_isConnected ? null : () => _writeField(_logCtrlFreezeOff),
+                  child: const Text('Freeze OFF (02 00)'),
+                ),
               ],
             ),
             const SizedBox(height: 12),
@@ -1073,7 +1090,7 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
                 const Expanded(child: Text('Logs (0x000B)')),
                 IconButton(
                   tooltip: 'Pobierz',
-                  onPressed: _busy || !_isConnected ? null : () => _writeField(_readLogsFirstLine),
+                  onPressed: _busy || !_isConnected ? null : () => _writeField(_readLogs),
                   icon: const Icon(Icons.download),
                 ),
                 IconButton(
@@ -1097,7 +1114,7 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
                 borderRadius: BorderRadius.circular(8),
               ),
               child: SelectableText(
-                _logsText.isEmpty ? '(brak \n nie odczytano)' : _logsText,
+                _logsText.isEmpty ? '(brak / nie odczytano)' : _logsText,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
               ),
             ),
