@@ -29,6 +29,7 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
   bool _busy = false;
   bool _liveAdvScan = true;
   bool _servicesDiscovered = false;
+  final Map<Uuid, _CharMeta> _charMeta = {};
 
   DiscoveredDevice? _lastSeenAdv;
   HoplaAdvData? _lastAdvParsed;
@@ -235,11 +236,28 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
           if (attempt == 0) {
             await Future<void>.delayed(const Duration(milliseconds: 300));
           }
-          final services = await _ble.discoverServices(_deviceId);
-          final hasService = services.any((s) => s.serviceId == HoplaGattUuids.service);
-          if (!hasService) {
-            throw Exception('Nie znaleziono XYZ Config Service: ${HoplaGattUuids.service}');
-          }
+          await _ble.discoverAllServices(_deviceId);
+          final services = await _ble.getDiscoveredServices(_deviceId);
+          final hopla = services.where((s) => s.id == HoplaGattUuids.service).toList();
+          if (hopla.isEmpty) throw Exception('Nie znaleziono XYZ Config Service: ${HoplaGattUuids.service}');
+
+          _charMeta
+            ..clear()
+            ..addEntries(
+              hopla.expand((s) => s.characteristics).map(
+                    (c) => MapEntry(
+                      c.id,
+                      _CharMeta(
+                        isReadable: c.isReadable,
+                        isWritableWithResponse: c.isWritableWithResponse,
+                        isWritableWithoutResponse: c.isWritableWithoutResponse,
+                        isNotifiable: c.isNotifiable,
+                        isIndicatable: c.isIndicatable,
+                      ),
+                    ),
+                  ),
+            );
+
           _servicesDiscovered = true;
           return;
         } catch (e) {
@@ -253,6 +271,52 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
         _startAdvScan();
       }
     }
+  }
+
+  _CharMeta? _meta(Uuid charId) => _charMeta[charId];
+
+  Future<void> _showDescriptorDialog(Uuid charId, {required String title}) async {
+    final meta = _meta(charId);
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: SingleChildScrollView(
+          child: Text(
+            [
+              'Characteristic UUID:',
+              '$charId',
+              '',
+              'Properties:',
+              if (meta == null) '— (brak danych z discovery)' else ...[
+                '- readable: ${meta.isReadable}',
+                '- write (with response): ${meta.isWritableWithResponse}',
+                '- write (without response): ${meta.isWritableWithoutResponse}',
+                '- notify: ${meta.isNotifiable}',
+                '- indicate: ${meta.isIndicatable}',
+              ],
+              '',
+              'Descriptor:',
+              'flutter_reactive_ble nie udostępnia API do listowania/odczytu wartości descriptorów (np. 0x2902).',
+            ].join('\n'),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('OK')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _descriptorPressed(Uuid charId, {required String title}) async {
+    if (!_isConnected) return;
+    if (!_servicesDiscovered) {
+      await _writeField(() async {
+        await _ensureServicesDiscovered();
+      });
+    }
+    await _showDescriptorDialog(charId, title: title);
   }
 
   Future<Uint8List> _readRaw(Uuid charId) async {
@@ -279,92 +343,6 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
       await _writeRaw(charId, value);
       return null;
     });
-  }
-
-  Future<void> _readAll() async {
-    if (!_isConnected) return;
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      // Do the whole sequence under a single GATT queue + one reconnect retry.
-      final result = await _runGattWithReconnect(() async {
-        await _ensureServicesDiscovered();
-
-        // Optional: bigger MTU helps with Logs reads.
-        try {
-          await _ble.requestMtu(deviceId: _deviceId, mtu: 247);
-        } catch (_) {
-          // ignore
-        }
-
-        Future<void> tinyGap() => Future<void>.delayed(const Duration(milliseconds: 60));
-
-        final sampleRate = HoplaBleCodec.readU16le(await _readRaw(HoplaGattUuids.sampleRate));
-        await tinyGap();
-        final logInterval = HoplaBleCodec.readU16le(await _readRaw(HoplaGattUuids.logInterval));
-        await tinyGap();
-        final advInterval = HoplaBleCodec.readU16le(await _readRaw(HoplaGattUuids.advInterval));
-        await tinyGap();
-        final txPower = HoplaBleCodec.readI8(await _readRaw(HoplaGattUuids.txPower));
-        await tinyGap();
-        final deviceName = HoplaBleCodec.readUtf8(await _readRaw(HoplaGattUuids.deviceName));
-        await tinyGap();
-        final accelThresh = HoplaBleCodec.readU16le(await _readRaw(HoplaGattUuids.accelThresh));
-        await tinyGap();
-        final accelRangeBytes = await _readRaw(HoplaGattUuids.accelRange);
-        final accelRange = accelRangeBytes.isEmpty ? null : accelRangeBytes[0];
-        await tinyGap();
-        final calibBytes = await _readRaw(HoplaGattUuids.accelCalib);
-        final calibX = HoplaBleCodec.readI16leAt(calibBytes, 0);
-        final calibY = HoplaBleCodec.readI16leAt(calibBytes, 2);
-        final calibZ = HoplaBleCodec.readI16leAt(calibBytes, 4);
-        await tinyGap();
-        final modeBytes = await _readRaw(HoplaGattUuids.mode);
-        final mode = modeBytes.isEmpty ? null : modeBytes[0];
-
-        return (
-          sampleRate: sampleRate,
-          logInterval: logInterval,
-          advInterval: advInterval,
-          txPower: txPower,
-          deviceName: deviceName,
-          accelThresh: accelThresh,
-          accelRange: accelRange,
-          calibX: calibX,
-          calibY: calibY,
-          calibZ: calibZ,
-          mode: mode,
-        );
-      });
-
-      if (!mounted) return;
-      setState(() {
-        _sampleRateCtrl.text = result.sampleRate.toString();
-        _logIntervalCtrl.text = result.logInterval.toString();
-        _advIntervalCtrl.text = result.advInterval.toString();
-        _txPowerCtrl.text = result.txPower.toString();
-        _deviceNameCtrl.text = result.deviceName;
-        _accelThreshCtrl.text = result.accelThresh.toString();
-        _accelRange = _normalizeRange(result.accelRange);
-        _calibXCtrl.text = result.calibX.toString();
-        _calibYCtrl.text = result.calibY.toString();
-        _calibZCtrl.text = result.calibZ.toString();
-        _mode = result.mode;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = 'Błąd odczytu: $e';
-      });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _busy = false;
-        });
-      }
-    }
   }
 
   int? _normalizeRange(int? range) {
@@ -403,69 +381,153 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
 
   int? _parseInt(String s) => int.tryParse(s.trim());
 
-  Future<void> _writeAll() async {
-    await _writeField(() async {
-      final sampleRate = _parseInt(_sampleRateCtrl.text);
-      final logInterval = _parseInt(_logIntervalCtrl.text);
-      final advInterval = _parseInt(_advIntervalCtrl.text);
-      final txPower = _parseInt(_txPowerCtrl.text);
-      final deviceName = _deviceNameCtrl.text;
-      final accelThresh = _parseInt(_accelThreshCtrl.text);
-      final calibX = _parseInt(_calibXCtrl.text);
-      final calibY = _parseInt(_calibYCtrl.text);
-      final calibZ = _parseInt(_calibZCtrl.text);
+  Future<void> _readU16To(TextEditingController ctrl, Uuid charId) async {
+    final v = HoplaBleCodec.readU16le(await _readRaw(charId));
+    if (!mounted) return;
+    setState(() => ctrl.text = v.toString());
+  }
 
-      if (sampleRate != null) {
-        await _write(HoplaGattUuids.sampleRate, HoplaBleCodec.u16le(sampleRate));
-      }
-      if (logInterval != null) {
-        await _write(HoplaGattUuids.logInterval, HoplaBleCodec.u16le(logInterval));
-      }
-      if (advInterval != null) {
-        await _write(HoplaGattUuids.advInterval, HoplaBleCodec.u16le(advInterval));
-      }
-      if (txPower != null) {
-        await _write(HoplaGattUuids.txPower, HoplaBleCodec.i8(txPower));
-      }
-      final nameBytes = HoplaBleCodec.utf8Bytes(deviceName);
-      if (nameBytes.length > 20) {
-        throw Exception('Device Name max 20 bajtów (UTF-8). Teraz: ${nameBytes.length}.');
-      }
-      await _write(HoplaGattUuids.deviceName, nameBytes);
+  Future<void> _writeU16From(TextEditingController ctrl, Uuid charId) async {
+    final v = _parseInt(ctrl.text) ?? 0;
+    await _writeRaw(charId, HoplaBleCodec.u16le(v));
+  }
 
-      if (accelThresh != null) {
-        await _write(HoplaGattUuids.accelThresh, HoplaBleCodec.u16le(accelThresh));
-      }
-      if (_accelRange != null) {
-        await _write(HoplaGattUuids.accelRange, HoplaBleCodec.u8(_accelRange!));
-      }
-      if (calibX != null && calibY != null && calibZ != null) {
-        final bytes = Uint8List.fromList([
-          ...HoplaBleCodec.i16le(calibX),
-          ...HoplaBleCodec.i16le(calibY),
-          ...HoplaBleCodec.i16le(calibZ),
-        ]);
-        await _write(HoplaGattUuids.accelCalib, bytes);
-      }
-      if (_mode != null) {
-        await _write(HoplaGattUuids.mode, HoplaBleCodec.u8(_mode!));
-      }
+  Future<void> _readI8To(TextEditingController ctrl, Uuid charId) async {
+    final v = HoplaBleCodec.readI8(await _readRaw(charId));
+    if (!mounted) return;
+    setState(() => ctrl.text = v.toString());
+  }
+
+  Future<void> _writeI8From(TextEditingController ctrl, Uuid charId) async {
+    final v = _parseInt(ctrl.text) ?? 0;
+    await _writeRaw(charId, HoplaBleCodec.i8(v));
+  }
+
+  Future<void> _readNameTo(TextEditingController ctrl, Uuid charId) async {
+    final s = HoplaBleCodec.readUtf8(await _readRaw(charId));
+    if (!mounted) return;
+    setState(() => ctrl.text = s);
+  }
+
+  Future<void> _writeNameFrom(TextEditingController ctrl, Uuid charId) async {
+    final bytes = HoplaBleCodec.utf8Bytes(ctrl.text);
+    if (bytes.length > 20) throw Exception('Max 20 bajtów UTF-8. Teraz: ${bytes.length}.');
+    await _writeRaw(charId, bytes);
+  }
+
+  Future<void> _readU8ToRange(Uuid charId) async {
+    final bytes = await _readRaw(charId);
+    final v = bytes.isEmpty ? null : bytes[0];
+    if (!mounted) return;
+    setState(() => _accelRange = _normalizeRange(v));
+  }
+
+  Future<void> _writeU8FromRange(Uuid charId) async {
+    if (_accelRange == null) return;
+    await _writeRaw(charId, HoplaBleCodec.u8(_accelRange!));
+  }
+
+  Future<void> _readMode(Uuid charId) async {
+    final bytes = await _readRaw(charId);
+    final v = bytes.isEmpty ? null : bytes[0];
+    if (!mounted) return;
+    setState(() => _mode = v);
+  }
+
+  Future<void> _writeMode(Uuid charId) async {
+    if (_mode == null) return;
+    await _writeRaw(charId, HoplaBleCodec.u8(_mode!));
+  }
+
+  Future<void> _readCalib(Uuid charId) async {
+    final b = await _readRaw(charId);
+    final x = HoplaBleCodec.readI16leAt(b, 0);
+    final y = HoplaBleCodec.readI16leAt(b, 2);
+    final z = HoplaBleCodec.readI16leAt(b, 4);
+    if (!mounted) return;
+    setState(() {
+      _calibXCtrl.text = x.toString();
+      _calibYCtrl.text = y.toString();
+      _calibZCtrl.text = z.toString();
     });
   }
 
+  Future<void> _writeCalib(Uuid charId) async {
+    final x = _parseInt(_calibXCtrl.text) ?? 0;
+    final y = _parseInt(_calibYCtrl.text) ?? 0;
+    final z = _parseInt(_calibZCtrl.text) ?? 0;
+    final bytes = Uint8List.fromList([
+      ...HoplaBleCodec.i16le(x),
+      ...HoplaBleCodec.i16le(y),
+      ...HoplaBleCodec.i16le(z),
+    ]);
+    await _writeRaw(charId, bytes);
+  }
+
   Future<void> _logCtrlWrite(Uint8List cmd) async {
-    await _writeField(() => _write(HoplaGattUuids.logCtrl, cmd));
+    await _writeRaw(HoplaGattUuids.logCtrl, cmd);
   }
 
   Future<void> _readLogsBestEffort() async {
     // flutter_reactive_ble does not expose "Read long / Read blob" offsets.
     // We still read a single chunk (usually <= MTU-1) so user can see something.
-    await _writeField(() async {
-      final bytes = await _read(HoplaGattUuids.logs);
-      _logsText = HoplaBleCodec.readUtf8(bytes);
-      if (!mounted) return;
-      setState(() {});
-    });
+    final bytes = await _readRaw(HoplaGattUuids.logs);
+    _logsText = HoplaBleCodec.readUtf8(bytes);
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  Future<void> _showLogCtrlDialog() async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Log Ctrl'),
+        content: const Text('Wyślij komendę do charakterystyki Log Ctrl (write).'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Zamknij'),
+          ),
+          TextButton(
+            onPressed: _busy || !_isConnected
+                ? null
+                : () async {
+                    await _writeField(() => _logCtrlWrite(Uint8List.fromList([0x01])));
+                    if (ctx.mounted) Navigator.of(ctx).pop();
+                  },
+            child: const Text('Clear (01)'),
+          ),
+          TextButton(
+            onPressed: _busy || !_isConnected
+                ? null
+                : () async {
+                    await _writeField(() => _logCtrlWrite(Uint8List.fromList([0x02, 0x01])));
+                    if (ctx.mounted) Navigator.of(ctx).pop();
+                  },
+            child: const Text('Freeze ON (02 01)'),
+          ),
+          TextButton(
+            onPressed: _busy || !_isConnected
+                ? null
+                : () async {
+                    await _writeField(() => _logCtrlWrite(Uint8List.fromList([0x02, 0x00])));
+                    if (ctx.mounted) Navigator.of(ctx).pop();
+                  },
+            child: const Text('Freeze OFF (02 00)'),
+          ),
+          TextButton(
+            onPressed: _busy || !_isConnected
+                ? null
+                : () async {
+                    await _writeField(() => _logCtrlWrite(Uint8List.fromList([0x04])));
+                    if (ctx.mounted) Navigator.of(ctx).pop();
+                  },
+            child: const Text('Cursor=0 (04)'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -590,12 +652,12 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
                   child: const Text('Rozłącz'),
                 ),
                 OutlinedButton(
-                  onPressed: _busy || !_isConnected ? null : _readAll,
-                  child: const Text('Odczytaj wszystko'),
-                ),
-                FilledButton.tonal(
-                  onPressed: _busy || !_isConnected ? null : _writeAll,
-                  child: const Text('Zapisz wszystko'),
+                  onPressed: _busy || !_isConnected
+                      ? null
+                      : () => _writeField(() async {
+                            await _ensureServicesDiscovered();
+                          }),
+                  child: const Text('Discover services'),
                 ),
               ],
             ),
@@ -620,39 +682,45 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
             _fieldU16(
               label: 'Sample Rate (ms)',
               controller: _sampleRateCtrl,
-              onWrite: () => _write(HoplaGattUuids.sampleRate, HoplaBleCodec.u16le(_parseInt(_sampleRateCtrl.text) ?? 0)),
+              onRead: () => _readU16To(_sampleRateCtrl, HoplaGattUuids.sampleRate),
+              onWrite: () => _writeU16From(_sampleRateCtrl, HoplaGattUuids.sampleRate),
+              onDescriptor: () => _descriptorPressed(HoplaGattUuids.sampleRate, title: 'Sample Rate'),
             ),
             _fieldU16(
               label: 'Log Interval (ms)',
               controller: _logIntervalCtrl,
-              onWrite: () => _write(HoplaGattUuids.logInterval, HoplaBleCodec.u16le(_parseInt(_logIntervalCtrl.text) ?? 0)),
+              onRead: () => _readU16To(_logIntervalCtrl, HoplaGattUuids.logInterval),
+              onWrite: () => _writeU16From(_logIntervalCtrl, HoplaGattUuids.logInterval),
+              onDescriptor: () => _descriptorPressed(HoplaGattUuids.logInterval, title: 'Log Interval'),
             ),
             _fieldU16(
               label: 'Adv Interval (ms)',
               controller: _advIntervalCtrl,
-              onWrite: () => _write(HoplaGattUuids.advInterval, HoplaBleCodec.u16le(_parseInt(_advIntervalCtrl.text) ?? 0)),
+              onRead: () => _readU16To(_advIntervalCtrl, HoplaGattUuids.advInterval),
+              onWrite: () => _writeU16From(_advIntervalCtrl, HoplaGattUuids.advInterval),
+              onDescriptor: () => _descriptorPressed(HoplaGattUuids.advInterval, title: 'Adv Interval'),
             ),
             _fieldI8(
               label: 'TX Power (dBm)',
               controller: _txPowerCtrl,
               helper: 'Typowe: -40,-20,-16,-12,-8,-4,0,3,4',
-              onWrite: () => _write(HoplaGattUuids.txPower, HoplaBleCodec.i8(_parseInt(_txPowerCtrl.text) ?? 0)),
+              onRead: () => _readI8To(_txPowerCtrl, HoplaGattUuids.txPower),
+              onWrite: () => _writeI8From(_txPowerCtrl, HoplaGattUuids.txPower),
+              onDescriptor: () => _descriptorPressed(HoplaGattUuids.txPower, title: 'TX Power'),
             ),
             _fieldText(
               label: 'Device Name (1..20 bajtów UTF-8)',
               controller: _deviceNameCtrl,
-              onWrite: () async {
-                final bytes = HoplaBleCodec.utf8Bytes(_deviceNameCtrl.text);
-                if (bytes.length > 20) {
-                  throw Exception('Max 20 bajtów UTF-8. Teraz: ${bytes.length}.');
-                }
-                await _write(HoplaGattUuids.deviceName, bytes);
-              },
+              onRead: () => _readNameTo(_deviceNameCtrl, HoplaGattUuids.deviceName),
+              onWrite: () => _writeNameFrom(_deviceNameCtrl, HoplaGattUuids.deviceName),
+              onDescriptor: () => _descriptorPressed(HoplaGattUuids.deviceName, title: 'Device Name'),
             ),
             _fieldU16(
               label: 'Accel Threshold (mg)',
               controller: _accelThreshCtrl,
-              onWrite: () => _write(HoplaGattUuids.accelThresh, HoplaBleCodec.u16le(_parseInt(_accelThreshCtrl.text) ?? 0)),
+              onRead: () => _readU16To(_accelThreshCtrl, HoplaGattUuids.accelThresh),
+              onWrite: () => _writeU16From(_accelThreshCtrl, HoplaGattUuids.accelThresh),
+              onDescriptor: () => _descriptorPressed(HoplaGattUuids.accelThresh, title: 'Accel Threshold'),
             ),
             const SizedBox(height: 12),
             _rangeDropdown(),
@@ -673,21 +741,21 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
                 Expanded(child: _smallNumberField('Z', _calibZCtrl)),
                 const SizedBox(width: 8),
                 IconButton(
-                  tooltip: 'Zapisz calib',
+                  tooltip: 'Pobierz',
+                  onPressed: _busy || !_isConnected ? null : () => _writeField(() => _readCalib(HoplaGattUuids.accelCalib)),
+                  icon: const Icon(Icons.download),
+                ),
+                IconButton(
+                  tooltip: 'Zapisz',
+                  onPressed: _busy || !_isConnected ? null : () => _writeField(() => _writeCalib(HoplaGattUuids.accelCalib)),
+                  icon: const Icon(Icons.upload),
+                ),
+                IconButton(
+                  tooltip: 'Descriptor',
                   onPressed: _busy || !_isConnected
                       ? null
-                      : () => _writeField(() async {
-                            final x = _parseInt(_calibXCtrl.text) ?? 0;
-                            final y = _parseInt(_calibYCtrl.text) ?? 0;
-                            final z = _parseInt(_calibZCtrl.text) ?? 0;
-                            final bytes = Uint8List.fromList([
-                              ...HoplaBleCodec.i16le(x),
-                              ...HoplaBleCodec.i16le(y),
-                              ...HoplaBleCodec.i16le(z),
-                            ]);
-                            await _write(HoplaGattUuids.accelCalib, bytes);
-                          }),
-                  icon: const Icon(Icons.save),
+                      : () => _descriptorPressed(HoplaGattUuids.accelCalib, title: 'Accel Calib'),
+                  icon: const Icon(Icons.info_outline),
                 ),
               ],
             ),
@@ -700,13 +768,17 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
   Widget _fieldU16({
     required String label,
     required TextEditingController controller,
-    required Future<void> Function() onWrite,
+    Future<void> Function()? onRead,
+    Future<void> Function()? onWrite,
+    Future<void> Function()? onDescriptor,
   }) {
     return _fieldRow(
       label: label,
       controller: controller,
       keyboardType: TextInputType.number,
+      onRead: onRead,
       onWrite: onWrite,
+      onDescriptor: onDescriptor,
     );
   }
 
@@ -714,27 +786,35 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
     required String label,
     required TextEditingController controller,
     String? helper,
-    required Future<void> Function() onWrite,
+    Future<void> Function()? onRead,
+    Future<void> Function()? onWrite,
+    Future<void> Function()? onDescriptor,
   }) {
     return _fieldRow(
       label: label,
       controller: controller,
       keyboardType: TextInputType.number,
       helper: helper,
+      onRead: onRead,
       onWrite: onWrite,
+      onDescriptor: onDescriptor,
     );
   }
 
   Widget _fieldText({
     required String label,
     required TextEditingController controller,
-    required Future<void> Function() onWrite,
+    Future<void> Function()? onRead,
+    Future<void> Function()? onWrite,
+    Future<void> Function()? onDescriptor,
   }) {
     return _fieldRow(
       label: label,
       controller: controller,
       keyboardType: TextInputType.text,
+      onRead: onRead,
       onWrite: onWrite,
+      onDescriptor: onDescriptor,
     );
   }
 
@@ -743,7 +823,9 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
     required TextEditingController controller,
     required TextInputType keyboardType,
     String? helper,
-    required Future<void> Function() onWrite,
+    Future<void> Function()? onRead,
+    Future<void> Function()? onWrite,
+    Future<void> Function()? onDescriptor,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -764,9 +846,19 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
           ),
           const SizedBox(width: 8),
           IconButton(
+            tooltip: 'Pobierz',
+            onPressed: _busy || !_isConnected || onRead == null ? null : () => _writeField(() => onRead()),
+            icon: const Icon(Icons.download),
+          ),
+          IconButton(
             tooltip: 'Zapisz',
-            onPressed: _busy || !_isConnected ? null : () => _writeField(onWrite),
-            icon: const Icon(Icons.save),
+            onPressed: _busy || !_isConnected || onWrite == null ? null : () => _writeField(() => onWrite()),
+            icon: const Icon(Icons.upload),
+          ),
+          IconButton(
+            tooltip: 'Descriptor',
+            onPressed: _busy || !_isConnected || onDescriptor == null ? null : () async => await onDescriptor(),
+            icon: const Icon(Icons.info_outline),
           ),
         ],
       ),
@@ -816,11 +908,25 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
         ),
         const SizedBox(width: 8),
         IconButton(
-          tooltip: 'Zapisz range',
+          tooltip: 'Pobierz',
+          onPressed: _busy || !_isConnected
+              ? null
+              : () => _writeField(() => _readU8ToRange(HoplaGattUuids.accelRange)),
+          icon: const Icon(Icons.download),
+        ),
+        IconButton(
+          tooltip: 'Zapisz',
           onPressed: _busy || !_isConnected || _accelRange == null
               ? null
-              : () => _writeField(() => _write(HoplaGattUuids.accelRange, HoplaBleCodec.u8(_accelRange!))),
-          icon: const Icon(Icons.save),
+              : () => _writeField(() => _writeU8FromRange(HoplaGattUuids.accelRange)),
+          icon: const Icon(Icons.upload),
+        ),
+        IconButton(
+          tooltip: 'Descriptor',
+          onPressed: _busy || !_isConnected
+              ? null
+              : () => _descriptorPressed(HoplaGattUuids.accelRange, title: 'Accel Range'),
+          icon: const Icon(Icons.info_outline),
         ),
       ],
     );
@@ -852,11 +958,21 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
         ),
         const SizedBox(width: 8),
         IconButton(
-          tooltip: 'Zapisz mode',
+          tooltip: 'Pobierz',
+          onPressed: _busy || !_isConnected ? null : () => _writeField(() => _readMode(HoplaGattUuids.mode)),
+          icon: const Icon(Icons.download),
+        ),
+        IconButton(
+          tooltip: 'Zapisz',
           onPressed: _busy || !_isConnected || _mode == null
               ? null
-              : () => _writeField(() => _write(HoplaGattUuids.mode, HoplaBleCodec.u8(_mode!))),
-          icon: const Icon(Icons.save),
+              : () => _writeField(() => _writeMode(HoplaGattUuids.mode)),
+          icon: const Icon(Icons.upload),
+        ),
+        IconButton(
+          tooltip: 'Descriptor',
+          onPressed: _busy || !_isConnected ? null : () => _descriptorPressed(HoplaGattUuids.mode, title: 'Mode'),
+          icon: const Icon(Icons.info_outline),
         ),
       ],
     );
@@ -879,29 +995,44 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
               style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey.shade700),
             ),
             const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
+            Row(
               children: [
-                OutlinedButton(
-                  onPressed: _busy || !_isConnected ? null : () => _logCtrlWrite(Uint8List.fromList([0x01])),
-                  child: const Text('Clear'),
+                const Expanded(child: Text('Logs (0x000B)')),
+                IconButton(
+                  tooltip: 'Pobierz',
+                  onPressed: _busy || !_isConnected ? null : () => _writeField(_readLogsBestEffort),
+                  icon: const Icon(Icons.download),
                 ),
-                OutlinedButton(
-                  onPressed: _busy || !_isConnected ? null : () => _logCtrlWrite(Uint8List.fromList([0x02, 0x01])),
-                  child: const Text('Freeze ON'),
+                IconButton(
+                  tooltip: 'Zapisz (niedostępne)',
+                  onPressed: null,
+                  icon: const Icon(Icons.upload),
                 ),
-                OutlinedButton(
-                  onPressed: _busy || !_isConnected ? null : () => _logCtrlWrite(Uint8List.fromList([0x02, 0x00])),
-                  child: const Text('Freeze OFF'),
+                IconButton(
+                  tooltip: 'Descriptor',
+                  onPressed: _busy || !_isConnected ? null : () => _descriptorPressed(HoplaGattUuids.logs, title: 'Logs'),
+                  icon: const Icon(Icons.info_outline),
                 ),
-                OutlinedButton(
-                  onPressed: _busy || !_isConnected ? null : () => _logCtrlWrite(Uint8List.fromList([0x04])),
-                  child: const Text('Cursor=0'),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                const Expanded(child: Text('Log Ctrl (0x000C)')),
+                IconButton(
+                  tooltip: 'Pobierz (niedostępne)',
+                  onPressed: null,
+                  icon: const Icon(Icons.download),
                 ),
-                FilledButton.tonal(
-                  onPressed: _busy || !_isConnected ? null : _readLogsBestEffort,
-                  child: const Text('Czytaj logs'),
+                IconButton(
+                  tooltip: 'Zapisz',
+                  onPressed: _busy || !_isConnected ? null : _showLogCtrlDialog,
+                  icon: const Icon(Icons.upload),
+                ),
+                IconButton(
+                  tooltip: 'Descriptor',
+                  onPressed: _busy || !_isConnected ? null : () => _descriptorPressed(HoplaGattUuids.logCtrl, title: 'Log Ctrl'),
+                  icon: const Icon(Icons.info_outline),
                 ),
               ],
             ),
@@ -935,6 +1066,22 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
       ),
     );
   }
+}
+
+class _CharMeta {
+  final bool isReadable;
+  final bool isWritableWithResponse;
+  final bool isWritableWithoutResponse;
+  final bool isNotifiable;
+  final bool isIndicatable;
+
+  const _CharMeta({
+    required this.isReadable,
+    required this.isWritableWithResponse,
+    required this.isWritableWithoutResponse,
+    required this.isNotifiable,
+    required this.isIndicatable,
+  });
 }
 
 
