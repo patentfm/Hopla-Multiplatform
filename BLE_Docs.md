@@ -24,8 +24,8 @@ W pakiecie reklamowym jest:
 
 - **Complete Local Name**: pełna nazwa urządzenia (GAP name).
 - **Manufacturer Specific Data** (AD type `0xFF`):
-  - **Company Identifier**: `0xFFFF` (testowy, do zmiany w `src/config.h` jako `MANUFACTURER_ID`)
-  - **Payload**: 8 bajtów (poniżej)
+    - **Company Identifier**: `0xFFFF` (testowy, do zmiany w `src/config.h` jako `MANUFACTURER_ID`)
+    - **Payload**: 8 bajtów (poniżej)
 
 ### Manufacturer payload (8 bajtów)
 
@@ -65,7 +65,7 @@ W tej bazie firmware podmienia 16-bitowy “short id” `0xNNNN` na pełny UUID:
 - **Short**: `0x0001`
 - **Full**: `12340001-1234-5678-ABCD-1234567890AB`
 
-Wszystkie charakterystyki mają:
+Większość charakterystyk ma:
 
 - **Properties**: Read + Write (Write Request, z odpowiedzią)
 - **Security**: open (bez parowania)
@@ -88,6 +88,8 @@ Domyślne wartości po starcie wynikają z `src/config.h` oraz inicjalizacji us�
 | Accel Range | `0x0008` | `12340008-1234-5678-ABCD-1234567890AB` | R/W | 1 | `uint8` | 2 | 2..16 | Zakres ±g; firmware normalizuje do 2/4/8/16 |
 | Accel Calib | `0x0009` | `12340009-1234-5678-ABCD-1234567890AB` | R/W | 6 | `3×int16 LE` | (0,0,0) | dowolne `int16` (mg) | Offsety kalibracji w mg: X,Y,Z |
 | Mode | `0x000A` | `1234000A-1234-5678-ABCD-1234567890AB` | R/W | 1 | `uint8` | 0 | 0/1/2 | Tryb: 0=Normal, 1=Eco, 2=Armed |
+| Logs | `0x000B` | `1234000B-1234-5678-ABCD-1234567890AB` | R | 0..1024 | `ASCII bytes` | (puste) | — | Bufor logów w RAM (linie zakończone `\\n`), **nadpisuje najstarsze** gdy zabraknie miejsca |
+| Log Ctrl | `0x000C` | `1234000C-1234-5678-ABCD-1234567890AB` | W | 1..8 | `bytes` | 0 | — | Sterowanie logami (clear/freeze) – opis niżej |
 
 ### Kodowanie wartości (przykłady)
 
@@ -103,14 +105,51 @@ Firmware przechowuje wartości “bazowe” z GATT, ale **faktycznie używa wart
 
 - **NORMAL (0)**: efektywne = bazowe.
 - **ECO (1)**: tryb oszczedny
-  - `sample_rate_ms`, `log_interval_ms`, `adv_interval_ms` są mnożone ×2 (z clampem do zakresów)
-  - `tx_power_dbm` jest ograniczane do maks. **-8 dBm** (jeśli bazowo było wyżej)
+    - `sample_rate_ms`, `log_interval_ms`, `adv_interval_ms` są mnożone ×2 (z clampem do zakresów)
+    - `tx_power_dbm` jest ograniczane do maks. **-8 dBm** (jeśli bazowo było wyżej)
 - **ARMED (2)**: tryb wyczulony
-  - `sample_rate_ms`, `log_interval_ms` są dzielone ÷2 (z clampem)
-  - `adv_interval_ms` jest dzielone ÷2 (jeśli > minimum)
-  - dodatkowo urządzenie “miga na czerwono” gdy \(\max(|x|,|y|,|z|)\) ≥ `accel_threshold_mg`
+    - `sample_rate_ms`, `log_interval_ms` są dzielone ÷2 (z clampem)
+    - `adv_interval_ms` jest dzielone ÷2 (jeśli > minimum)
+    - dodatkowo urządzenie “miga na czerwono” gdy \(\max(|x|,|y|,|z|)\) ≥ `accel_threshold_mg`
 
 ---
+
+## Logi po GATT (Logs + Log Ctrl)
+
+### Logs (`0x000B`)
+
+- **Odczyt**: użyj **Read long / Read blob** (w nRF Connect: “Read long”). SoftDevice będzie pytał o kolejne offsety aż urządzenie zwróci 0 bajtów.
+- Jeśli chcesz zacząć od innego miejsca: ustaw `Log Ctrl` komendą `03 <offset_u16_le>` (cursor) i wykonaj “Read long”.
+- **Format**: surowe bajty ASCII; kolejne wpisy są rozdzielone `\\n`.
+- **Pamięć**: to jest **ring buffer w RAM** o rozmiarze `GATT_LOG_BUFFER_SIZE` (domyślnie 1024 B). Po zapełnieniu **najstarsze dane są automatycznie usuwane**.
+
+#### Jak czytać w nRF Connect (praktycznie)
+
+1) (Opcjonalnie) Write do **Log Ctrl**: `02 01` (freeze), żeby log nie zmieniał się w trakcie odczytu.
+2) Write do **Log Ctrl**: `04` (reset cursor = 0).
+3) Na **Logs** użyj **Read long** (apka będzie czytać kolejne offsety aż dostanie 0 bajtów).
+4) (Opcjonalnie) Write do **Log Ctrl**: `02 00` (unfreeze).
+
+**Uwaga:** jeśli nRF Connect pokazuje “puste pole”, to często znaczy, że urządzenie zwróciło **0 bajtów** (czyli “koniec logów” dla danego kursora/offsetu). Zrób wtedy `04` i ponownie “Read long”.
+
+#### Jak rozkodować `(0x)` HEX
+
+nRF Connect często pokazuje bajty jako `(0x) ...`. To jest tekst ASCII w hexie (`0a` = newline `\\n`), np.:
+
+`6c-6f-67-73-3a-72-65-61-64-79-0a-62-6f-6f-74-0a`
+
+= `logs:ready\\nboot\\n`
+
+### Log Ctrl (`0x000C`)
+
+Komendy (Write):
+
+- `01` — **clear** (wyczyść logi)
+- `02 00` — **freeze off** (wznów dopisywanie)
+- `02 01` — **freeze on** (zatrzymaj dopisywanie, ułatwia stabilny odczyt)
+- `03 <u16 LE>` — **set cursor** (ustaw pozycję odczytu od “najstarszego” bajtu)
+- `04` — **reset cursor** (ustaw cursor = 0)
+
 
 ## Uwaga o “handle” vs UUID
 
@@ -122,12 +161,12 @@ Na Androidzie należy robić **discoverServices()** i wyszukiwać po **UUID**.
 ## Minimalny schemat w Androidzie (co robić)
 
 - Skanuj i filtruj po:
-  - nazwie `Hopla!.*` **lub**
-  - Manufacturer Data z Company ID `0xFFFF` i `data_type=0x01`
+    - nazwie `Hopla!.*` **lub**
+    - Manufacturer Data z Company ID `0xFFFF` i `data_type=0x01`
 - Jeśli chcesz zmieniać ustawienia:
-  - połącz się (GATT connect)
-  - wykonaj `discoverServices()`
-  - znajdź service UUID `12340001-1234-5678-ABCD-1234567890AB`
-  - zapisuj charakterystyki przez **Write (z odpowiedzią)** w formacie opisanym wyżej
+    - połącz się (GATT connect)
+    - wykonaj `discoverServices()`
+    - znajdź service UUID `12340001-1234-5678-ABCD-1234567890AB`
+    - zapisuj charakterystyki przez **Write (z odpowiedzią)** w formacie opisanym wyżej
 
 
