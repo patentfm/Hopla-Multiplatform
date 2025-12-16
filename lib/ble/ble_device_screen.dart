@@ -587,7 +587,7 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
     // Simplified: read a single chunk and show only the first line (up to '\n').
     final bytes = await _readRaw(HoplaGattUuids.logs);
     final text = HoplaBleCodec.readUtf8(bytes);
-    final firstLine = text.split('\n').first;
+    final firstLine = text;
     if (!mounted) return;
     setState(() {
       _logsText = firstLine.trim().isEmpty ? '(brak / nie odczytano)' : firstLine;
@@ -1097,7 +1097,7 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
                 borderRadius: BorderRadius.circular(8),
               ),
               child: SelectableText(
-                _logsText.isEmpty ? '(brak / nie odczytano)' : _logsText,
+                _logsText.isEmpty ? '(brak \n nie odczytano)' : _logsText,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
               ),
             ),
