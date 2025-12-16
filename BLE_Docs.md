@@ -90,7 +90,7 @@ Domyślne wartości po starcie wynikają z `src/config.h` oraz inicjalizacji us�
 | Mode | `0x000A` | `1234000A-1234-5678-ABCD-1234567890AB` | R/W | 1 | `uint8` | 0 | 0/1/2 | Tryb: 0=Normal, 1=Eco, 2=Armed |
 | Logs | `0x000B` | `1234000B-1234-5678-ABCD-1234567890AB` | R | 0..1024 | `ASCII bytes` | (puste) | — | Bufor logów w RAM (linie zakończone `\\n`), **nadpisuje najstarsze** gdy zabraknie miejsca |
 | Log Ctrl | `0x000C` | `1234000C-1234-5678-ABCD-1234567890AB` | W | 1..8 | `bytes` | 0 | — | Sterowanie logami (clear/freeze) – opis niżej |
-| Log Stats (debug) | `0x000D` | `1234000D-1234-5678-ABCD-1234567890AB` | R | 6 | `3×uint16 LE` | — | — | Debug: `offset,len,avail` dla **ostatniego** odczytu `Logs` |
+| Diag LED | `0x000D` | `1234000D-1234-5678-ABCD-1234567890AB` | R/W | 1 | `uint8` | 0 | 0/1 | LED diagnostyczna: 0=wyłączona (domyślnie), 1=włączona (miganie/statusowe “flash’e”) |
 
 ### Kodowanie wartości (przykłady)
 
@@ -148,14 +148,11 @@ Komendy (Write):
 - `02 00` — **freeze off** (wznów dopisywanie)
 - `02 01` — **freeze on** (zatrzymaj dopisywanie, ułatwia stabilny odczyt)
 
-### Log Stats (`0x000D`) (debug)
+### Diag LED (`0x000D`)
 
 - **Odczyt**: zwykły Read.
-- **Rozmiar**: 6 bajtów = `offset`, `len`, `avail` (3×`uint16 LE`)
-- **Znaczenie**: statystyki dla **ostatniego** odczytu `Logs`:
-  - `offset`: offset (w bajtach) użyty w ostatnim read/blob
-  - `len`: liczba bajtów zwróconych w ostatnim kawałku
-  - `avail`: ile bajtów “zostało do końca” od tego offsetu (np. \(1024 - offset\), z clampem)
+- **Zapis**: Write (1 bajt).
+- **Wartości**: `0` = OFF (domyślnie), `1` = ON (miganie/statusowe “flashe”).
 
 
 ## Uwaga o “handle” vs UUID

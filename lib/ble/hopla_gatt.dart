@@ -29,7 +29,8 @@ class HoplaGattUuids {
   static final Uuid mode = fullFromShort(0x000a);
   static final Uuid logs = fullFromShort(0x000b);
   static final Uuid logCtrl = fullFromShort(0x000c);
-  static final Uuid logStats = fullFromShort(0x000d);
+  // 0x000D: Diag LED (diagnostic LED flash/status)
+  static final Uuid diagLed = fullFromShort(0x000d);
 
   // Kept for readability / future asserts.
   static final Uuid base = Uuid.parse(_base);

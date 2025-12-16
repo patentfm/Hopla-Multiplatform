@@ -51,6 +51,7 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
   final _calibYCtrl = TextEditingController();
   final _calibZCtrl = TextEditingController();
   int? _mode; // 0/1/2
+  int? _diagLed; // 0/1
 
   // Logs
   String _logsText = '';
@@ -379,6 +380,14 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
         '- Armed: sample/log ÷2 (clamp), adv ÷2 (jeśli > min)',
       ].join('\n');
     }
+    if (charId == HoplaGattUuids.diagLed) {
+      return [
+        'Diag LED (0x000D)',
+        '- Typ: uint8',
+        '- Default: 0',
+        '- Wartości: 0=OFF, 1=ON (miganie/statusowe “flashe”)',
+      ].join('\n');
+    }
     if (charId == HoplaGattUuids.logs) {
       return [
         'Logs (0x000B)',
@@ -539,6 +548,19 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
   Future<void> _writeMode(Uuid charId) async {
     if (_mode == null) return;
     await _writeRaw(charId, HoplaBleCodec.u8(_mode!));
+  }
+
+  Future<void> _readDiagLed(Uuid charId) async {
+    final bytes = await _readRaw(charId);
+    final v = bytes.isEmpty ? null : bytes[0];
+    if (!mounted) return;
+    setState(() => _diagLed = v);
+  }
+
+  Future<void> _writeDiagLed(Uuid charId) async {
+    if (_diagLed == null) return;
+    final v = _diagLed == 0 ? 0 : 1;
+    await _writeRaw(charId, HoplaBleCodec.u8(v));
   }
 
   Future<void> _readCalib(Uuid charId) async {
@@ -767,6 +789,8 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
             _rangeDropdown(),
             const SizedBox(height: 12),
             _modeDropdown(),
+            const SizedBox(height: 12),
+            _diagLedToggle(),
             const SizedBox(height: 12),
             Text(
               'Accel Calib (mg, int16 LE)',
@@ -1013,6 +1037,49 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
         IconButton(
           tooltip: 'Descriptor',
           onPressed: _busy || !_isConnected ? null : () => _descriptorPressed(HoplaGattUuids.mode, title: 'Mode'),
+          icon: const Icon(Icons.info_outline),
+        ),
+      ],
+    );
+  }
+
+  Widget _diagLedToggle() {
+    final isOn = (_diagLed ?? 0) != 0;
+    return Row(
+      children: [
+        Expanded(
+          child: InputDecorator(
+            decoration: const InputDecoration(
+              labelText: 'Diag LED',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(isOn ? '1 = ON' : '0 = OFF'),
+                Switch.adaptive(
+                  value: isOn,
+                  onChanged: _busy ? null : (v) => setState(() => _diagLed = v ? 1 : 0),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        IconButton(
+          tooltip: 'Pobierz',
+          onPressed: _busy || !_isConnected ? null : () => _writeField(() => _readDiagLed(HoplaGattUuids.diagLed)),
+          icon: const Icon(Icons.download),
+        ),
+        IconButton(
+          tooltip: 'Zapisz',
+          onPressed: _busy || !_isConnected ? null : () => _writeField(() => _writeDiagLed(HoplaGattUuids.diagLed)),
+          icon: const Icon(Icons.upload),
+        ),
+        IconButton(
+          tooltip: 'Descriptor',
+          onPressed: _busy || !_isConnected ? null : () => _descriptorPressed(HoplaGattUuids.diagLed, title: 'Diag LED'),
           icon: const Icon(Icons.info_outline),
         ),
       ],
