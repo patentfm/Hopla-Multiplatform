@@ -90,6 +90,7 @@ Domyślne wartości po starcie wynikają z `src/config.h` oraz inicjalizacji us�
 | Mode | `0x000A` | `1234000A-1234-5678-ABCD-1234567890AB` | R/W | 1 | `uint8` | 0 | 0/1/2 | Tryb: 0=Normal, 1=Eco, 2=Armed |
 | Logs | `0x000B` | `1234000B-1234-5678-ABCD-1234567890AB` | R | 0..1024 | `ASCII bytes` | (puste) | — | Bufor logów w RAM (linie zakończone `\\n`), **nadpisuje najstarsze** gdy zabraknie miejsca |
 | Log Ctrl | `0x000C` | `1234000C-1234-5678-ABCD-1234567890AB` | W | 1..8 | `bytes` | 0 | — | Sterowanie logami (clear/freeze) – opis niżej |
+| Log Stats (debug) | `0x000D` | `1234000D-1234-5678-ABCD-1234567890AB` | R | 6 | `3×uint16 LE` | — | — | Debug: `offset,len,avail` dla **ostatniego** odczytu `Logs` |
 
 ### Kodowanie wartości (przykłady)
 
@@ -119,6 +120,7 @@ Firmware przechowuje wartości “bazowe” z GATT, ale **faktycznie używa wart
 ### Logs (`0x000B`)
 
 - **Odczyt**: użyj **Read long / Read blob** (w nRF Connect: “Read long”). SoftDevice będzie pytał o kolejne offsety aż urządzenie zwróci 0 bajtów.
+- **Chunking**: w jednym kawałku urządzenie zwraca maks. `min(244, 1024 - offset)` bajtów.
 - **Format**: surowe bajty ASCII; kolejne wpisy są rozdzielone `\\n`.
 - **Pamięć**: to jest **ring buffer w RAM** o rozmiarze `GATT_LOG_BUFFER_SIZE` (domyślnie 1024 B). Po zapełnieniu **najstarsze dane są automatycznie usuwane**.
 
@@ -145,6 +147,15 @@ Komendy (Write):
 - `01` — **clear** (wyczyść logi)
 - `02 00` — **freeze off** (wznów dopisywanie)
 - `02 01` — **freeze on** (zatrzymaj dopisywanie, ułatwia stabilny odczyt)
+
+### Log Stats (`0x000D`) (debug)
+
+- **Odczyt**: zwykły Read.
+- **Rozmiar**: 6 bajtów = `offset`, `len`, `avail` (3×`uint16 LE`)
+- **Znaczenie**: statystyki dla **ostatniego** odczytu `Logs`:
+  - `offset`: offset (w bajtach) użyty w ostatnim read/blob
+  - `len`: liczba bajtów zwróconych w ostatnim kawałku
+  - `avail`: ile bajtów “zostało do końca” od tego offsetu (np. \(1024 - offset\), z clampem)
 
 
 ## Uwaga o “handle” vs UUID

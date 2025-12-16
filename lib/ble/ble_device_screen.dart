@@ -54,6 +54,8 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
 
   // Logs
   String _logsText = '';
+  int? _lastLogsReadLen;
+  static const int _logsUiLimitBytes = 240;
 
   String get _deviceId => widget.device.id;
 
@@ -385,10 +387,7 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
         '',
         'Odczyt: Read long / Read blob (offsety 0, 244, 488…), aż urządzenie zwróci 0 bajtów.',
         '',
-        'Opcjonalnie (stabilny odczyt):',
-        '- Log Ctrl: 02 01 (freeze on)',
-        '- Odczytaj Logs (Read long)',
-        '- Log Ctrl: 02 00 (freeze off)',
+        'W aplikacji wyświetlamy skrót (max $_logsUiLimitBytes bajtów).',
       ].join('\n');
     }
     return 'Brak opisu dla tej charakterystyki.';
@@ -446,21 +445,6 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
   Future<void> _writeRaw(Uuid charId, Uint8List value) async {
     final qc = HoplaBleQualified.qc(deviceId: _deviceId, characteristicId: charId);
     await _ble.writeCharacteristicWithResponse(qc, value: value);
-  }
-
-  Future<Uint8List> _read(Uuid charId) async {
-    return _runGattWithReconnect(() async {
-      await _ensureServicesDiscovered();
-      return _readRaw(charId);
-    });
-  }
-
-  Future<void> _write(Uuid charId, Uint8List value) async {
-    await _runGattWithReconnect(() async {
-      await _ensureServicesDiscovered();
-      await _writeRaw(charId, value);
-      return null;
-    });
   }
 
   int? _normalizeRange(int? range) {
@@ -582,29 +566,16 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
     await _writeRaw(charId, bytes);
   }
 
-  Future<void> _logCtrlClear() async {
-    // Log Ctrl command: 01 — clear (wyczyść logi)
-    await _writeRaw(HoplaGattUuids.logCtrl, Uint8List.fromList([0x01]));
-  }
-
-  Future<void> _logCtrlFreezeOn() async {
-    // Log Ctrl command: 02 01 — freeze on (zatrzymaj dopisywanie)
-    await _writeRaw(HoplaGattUuids.logCtrl, Uint8List.fromList([0x02, 0x01]));
-  }
-
-  Future<void> _logCtrlFreezeOff() async {
-    // Log Ctrl command: 02 00 — freeze off (wznów dopisywanie)
-    await _writeRaw(HoplaGattUuids.logCtrl, Uint8List.fromList([0x02, 0x00]));
-  }
-
-  Future<void> _readLogs() async {
-    // Firmware exposes logs as a readable characteristic.
-    // Client should perform "Read long / Read blob" as needed (offsets 0, 244, 488...).
+  Future<void> _readLogsShort() async {
+    // Read Logs and show a short snippet (helps avoid issues on flaky stacks).
     final bytes = await _readRaw(HoplaGattUuids.logs);
-    final text = HoplaBleCodec.readUtf8(bytes);
+    final shownLen = bytes.length > _logsUiLimitBytes ? _logsUiLimitBytes : bytes.length;
+    final shownBytes = Uint8List.sublistView(bytes, 0, shownLen);
+    final text = HoplaBleCodec.readUtf8(shownBytes);
     if (!mounted) return;
     setState(() {
       _logsText = text.trim().isEmpty ? '(brak / nie odczytano)' : text;
+      _lastLogsReadLen = shownLen;
     });
   }
 
@@ -1061,28 +1032,8 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Odczyt: Read long / Read blob (offsety 0, 244, 488…). Opcjonalnie użyj freeze, żeby log nie zmieniał się w trakcie odczytu.',
+              'Pobieramy krótki fragment loga (max $_logsUiLimitBytes bajtów), żeby nie dobijać do limitu.',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey.shade700),
-            ),
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                OutlinedButton(
-                  onPressed: _busy || !_isConnected ? null : () => _writeField(_logCtrlClear),
-                  child: const Text('Clear (01)'),
-                ),
-                OutlinedButton(
-                  onPressed: _busy || !_isConnected ? null : () => _writeField(_logCtrlFreezeOn),
-                  child: const Text('Freeze ON (02 01)'),
-                ),
-                OutlinedButton(
-                  onPressed: _busy || !_isConnected ? null : () => _writeField(_logCtrlFreezeOff),
-                  child: const Text('Freeze OFF (02 00)'),
-                ),
-              ],
             ),
             const SizedBox(height: 12),
             Row(
@@ -1090,13 +1041,13 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
                 const Expanded(child: Text('Logs (0x000B)')),
                 IconButton(
                   tooltip: 'Pobierz',
-                  onPressed: _busy || !_isConnected ? null : () => _writeField(_readLogs),
+                  onPressed: _busy || !_isConnected ? null : () => _writeField(_readLogsShort),
                   icon: const Icon(Icons.download),
                 ),
-                IconButton(
+                const IconButton(
                   tooltip: 'Zapisz (niedostępne)',
                   onPressed: null,
-                  icon: const Icon(Icons.upload),
+                  icon: Icon(Icons.upload),
                 ),
                 IconButton(
                   tooltip: 'Descriptor',
@@ -1117,6 +1068,16 @@ class _BleDeviceScreenState extends State<BleDeviceScreen> {
                 _logsText.isEmpty ? '(brak / nie odczytano)' : _logsText,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
               ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              [
+                if (_lastLogsReadLen != null) ...[
+                  'Last log read: $_lastLogsReadLen / $_logsUiLimitBytes B',
+                  'Remaining: ${(_logsUiLimitBytes - _lastLogsReadLen!).clamp(0, _logsUiLimitBytes)} B',
+                ],
+              ].join('   '),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey.shade700),
             ),
           ],
         ),
