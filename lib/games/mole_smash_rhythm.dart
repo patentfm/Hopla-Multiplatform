@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:ui';
 
+import 'package:flame/components.dart';
+import 'package:flame/game.dart';
+import 'package:flame/text.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 
 class MoleSmashRhythmScreen extends StatefulWidget {
@@ -12,57 +15,170 @@ class MoleSmashRhythmScreen extends StatefulWidget {
   State<MoleSmashRhythmScreen> createState() => _MoleSmashRhythmScreenState();
 }
 
-class _MoleSmashRhythmScreenState extends State<MoleSmashRhythmScreen>
-    with SingleTickerProviderStateMixin {
-  static const int _gridSize = 3;
-  static const Duration _initialSpawnInterval = Duration(milliseconds: 1500);
-  static const Duration _minSpawnInterval = Duration(milliseconds: 550);
-  static const Duration _moleLifetime = Duration(milliseconds: 1300);
-  static const double _impactDeltaThreshold = 5.2; // m/s^2 step change
-  static const double _impactAbsoluteThreshold = 15.0; // m/s^2 absolute z
-  static const double _tiltRange = 8.0;
-
-  final Random _random = Random();
-  late final Ticker _ticker;
+class _MoleSmashRhythmScreenState extends State<MoleSmashRhythmScreen> {
+  late final MoleSmashRhythmGame _game;
   StreamSubscription<AccelerometerEvent>? _accelerometerSub;
 
+  @override
+  void initState() {
+    super.initState();
+    _game = MoleSmashRhythmGame();
+    _accelerometerSub = accelerometerEvents.listen(_game.handleAccelerometer);
+  }
+
+  @override
+  void dispose() {
+    _accelerometerSub?.cancel();
+    _game.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: GameWidget(
+          game: _game,
+          overlayBuilderMap: {
+            'hud': (context, game) => _HudOverlay(game as MoleSmashRhythmGame),
+            'gameOver': (context, game) => _GameOverOverlay(
+                  game: game as MoleSmashRhythmGame,
+                ),
+          },
+          initialActiveOverlays: const ['hud'],
+        ),
+      ),
+    );
+  }
+}
+
+class MoleSmashRhythmGame extends FlameGame {
+  MoleSmashRhythmGame();
+
+  static const int _gridSize = 3;
+  static const double _impactDeltaThreshold = 5.2;
+  static const double _impactAbsoluteThreshold = 15.0;
+  static const double _tiltRange = 8.0;
+
   final Map<int, _Mole> _activeMoles = {};
-  Duration _elapsed = Duration.zero;
-  Duration _nextSpawnAt = _initialSpawnInterval;
+  final Random _random = Random();
+  final Duration _initialSpawnInterval = const Duration(milliseconds: 1500);
+  final Duration _minSpawnInterval = const Duration(milliseconds: 550);
+  final Duration _moleLifetime = const Duration(milliseconds: 1300);
+
+  final ValueNotifier<_HudState> hud = ValueNotifier(
+    const _HudState(score: 0, streak: 0, lives: 3, difficulty: 1, tempoMs: 1500, paused: false),
+  );
+
+  double _elapsed = 0;
+  double _nextSpawnAt = 1.5;
   int _score = 0;
   int _streak = 0;
   int _lives = 3;
-  bool _isPaused = false;
   bool _isGameOver = false;
+  bool _isPaused = false;
   double _difficulty = 1.0;
-
   double _tiltX = 0;
   double _tiltY = 0;
   double _lastZ = 0;
   DateTime _lastImpactAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
-  void initState() {
-    super.initState();
-    _ticker = createTicker(_onTick)..start();
-    _accelerometerSub = accelerometerEvents.listen(_onAccelerometerEvent);
+  Future<void> onLoad() async {
+    camera.viewport = FixedResolutionViewport(Vector2(1080, 1920));
   }
 
   @override
-  void dispose() {
-    _accelerometerSub?.cancel();
-    _ticker.dispose();
-    super.dispose();
+  void update(double dt) {
+    super.update(dt);
+    if (_isPaused || _isGameOver) {
+      return;
+    }
+
+    _elapsed += dt;
+    _spawnMolesIfNeeded();
+    _expireMoles();
+    _adjustDifficulty();
+    _updateHud();
   }
 
-  void _onAccelerometerEvent(AccelerometerEvent event) {
-    if (_isPaused || _isGameOver) return;
-    if (!mounted) return;
+  @override
+  void render(Canvas canvas) {
+    super.render(canvas);
+    final bgPaint = Paint()..color = const Color(0xFF0E0F17);
+    canvas.drawRect(Rect.fromLTWH(0, 0, size.x, size.y), bgPaint);
 
-    setState(() {
-      _tiltX = event.x;
-      _tiltY = event.y;
-    });
+    final boardSize = min(size.x, size.y) * 0.9;
+    final offset = Offset((size.x - boardSize) / 2, (size.y - boardSize) / 2 + 40);
+    final cellSize = boardSize / _gridSize;
+
+    final inactivePaint = Paint()..color = const Color(0xFF1F2230);
+    final activePaint = Paint()..color = const Color(0xFF4CAF50);
+    final borderPaint = Paint()
+      ..color = const Color(0xFF3C4DD0)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5;
+    final timerPaint = Paint()
+      ..color = const Color(0xFFFFC107)
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = 6;
+
+    final textPaint = TextPaint(
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 28,
+        fontWeight: FontWeight.bold,
+      ),
+    );
+
+    for (int row = 0; row < _gridSize; row++) {
+      for (int col = 0; col < _gridSize; col++) {
+        final index = row * _gridSize + col;
+        final rect = Rect.fromLTWH(
+          offset.dx + col * cellSize,
+          offset.dy + row * cellSize,
+          cellSize,
+          cellSize,
+        );
+
+        final mole = _activeMoles[index];
+        final isSelected = index == _selectedHoleIndex;
+        final basePaint = mole != null ? activePaint : inactivePaint;
+
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(rect.deflate(10), const Radius.circular(18)),
+          basePaint,
+        );
+
+        if (mole != null) {
+          final progress = ((elapsedSeconds - mole.spawnedAt) /
+                  (_moleLifetime.inMilliseconds / 1000))
+              .clamp(0.0, 1.0);
+          final barStart = Offset(rect.left + 14, rect.bottom - 18);
+          final barEnd = Offset(rect.left + 14 + (rect.width - 28) * (1 - progress), rect.bottom - 18);
+          canvas.drawLine(barStart, barEnd, timerPaint);
+          textPaint.render(
+            canvas,
+            '${((1 - progress) * 100).clamp(0, 99).round()}%',
+            Vector2(rect.center.dx - 24, rect.center.dy - 12),
+          );
+        }
+
+        if (isSelected) {
+          canvas.drawRRect(
+            RRect.fromRectAndRadius(rect.deflate(6), const Radius.circular(22)),
+            borderPaint,
+          );
+        }
+      }
+    }
+  }
+
+  void handleAccelerometer(AccelerometerEvent event) {
+    if (_isPaused || _isGameOver) return;
+
+    _tiltX = event.x;
+    _tiltY = event.y;
 
     final deltaZ = (event.z - _lastZ).abs();
     final now = DateTime.now();
@@ -76,40 +192,57 @@ class _MoleSmashRhythmScreenState extends State<MoleSmashRhythmScreen>
     _lastZ = event.z;
   }
 
-  void _onTick(Duration elapsed) {
-    if (_isPaused || _isGameOver) return;
+  void togglePause() {
+    if (_isGameOver) return;
+    _isPaused = !_isPaused;
+    if (_isPaused) {
+      pauseEngine();
+    } else {
+      resumeEngine();
+    }
+    _updateHud();
+  }
 
-    setState(() {
-      _elapsed = elapsed;
-      _spawnMolesIfNeeded();
-      _expireMoles();
-      _adjustDifficulty();
-    });
+  void restart() {
+    _activeMoles.clear();
+    _elapsed = 0;
+    _nextSpawnAt = _initialSpawnInterval.inMilliseconds / 1000;
+    _score = 0;
+    _streak = 0;
+    _lives = 3;
+    _isPaused = false;
+    _isGameOver = false;
+    _difficulty = 1.0;
+    _tiltX = 0;
+    _tiltY = 0;
+    _lastZ = 0;
+    _lastImpactAt = DateTime.fromMillisecondsSinceEpoch(0);
+    overlays.remove('gameOver');
+    resumeEngine();
+    _updateHud();
   }
 
   void _spawnMolesIfNeeded() {
-    if (_elapsed < _nextSpawnAt) return;
+    if (elapsedSeconds < _nextSpawnAt) return;
 
     final freeHoles = List.generate(_gridSize * _gridSize, (i) => i)
         .where((index) => !_activeMoles.containsKey(index))
         .toList();
-
     if (freeHoles.isEmpty) {
       _nextSpawnAt += _currentSpawnInterval;
       return;
     }
 
     final holeIndex = freeHoles[_random.nextInt(freeHoles.length)];
-    _activeMoles[holeIndex] = _Mole(spawnedAt: _elapsed);
-    _nextSpawnAt = _elapsed + _currentSpawnInterval;
+    _activeMoles[holeIndex] = _Mole(spawnedAt: elapsedSeconds);
+    _nextSpawnAt = elapsedSeconds + _currentSpawnInterval;
   }
 
   void _expireMoles() {
     final expired = _activeMoles.entries
-        .where((entry) => _elapsed - entry.value.spawnedAt > _moleLifetime)
+        .where((entry) => elapsedSeconds - entry.value.spawnedAt > _moleLifetime.inMilliseconds / 1000)
         .map((entry) => entry.key)
         .toList();
-
     for (final index in expired) {
       _activeMoles.remove(index);
       _registerMiss();
@@ -120,10 +253,8 @@ class _MoleSmashRhythmScreenState extends State<MoleSmashRhythmScreen>
     final targetIndex = _selectedHoleIndex;
     final mole = _activeMoles[targetIndex];
     if (mole != null) {
-      final reactionTime = _elapsed - mole.spawnedAt;
-      final timingBonus =
-          (1.0 - (reactionTime.inMilliseconds / _moleLifetime.inMilliseconds))
-              .clamp(0.3, 1.0);
+      final reaction = elapsedSeconds - mole.spawnedAt;
+      final timingBonus = (1.0 - (reaction / (_moleLifetime.inMilliseconds / 1000))).clamp(0.3, 1.0);
       final baseScore = 100 + (_difficulty * 25).round();
       _score += (baseScore * timingBonus).round();
       _streak += 1;
@@ -142,189 +273,189 @@ class _MoleSmashRhythmScreenState extends State<MoleSmashRhythmScreen>
   }
 
   void _adjustDifficulty() {
-    // Increase difficulty every 20 seconds or after streaks.
-    final timeFactor = (_elapsed.inSeconds ~/ 20) + 1;
+    final timeFactor = (_elapsed ~/ 20) + 1;
     final streakFactor = 1 + (_streak ~/ 5) * 0.05;
     _difficulty = (timeFactor * streakFactor).clamp(1.0, 3.5).toDouble();
   }
 
-  void _togglePause() {
-    setState(() {
-      _isPaused = !_isPaused;
-    });
-  }
-
-  void _restartGame() {
-    setState(() {
-      _activeMoles.clear();
-      _elapsed = Duration.zero;
-      _nextSpawnAt = _initialSpawnInterval;
-      _score = 0;
-      _streak = 0;
-      _lives = 3;
-      _isPaused = false;
-      _isGameOver = false;
-      _difficulty = 1.0;
-    });
-    _ticker.start();
+  void _updateHud() {
+    hud.value = _HudState(
+      score: _score,
+      streak: _streak,
+      lives: _lives,
+      difficulty: _difficulty,
+      tempoMs: (_currentSpawnInterval * 1000).round(),
+      paused: _isPaused,
+    );
   }
 
   void _endGame() {
-    setState(() {
-      _isGameOver = true;
-    });
-    _ticker.stop();
-  }
-
-  Duration get _currentSpawnInterval {
-    final multiplier = max(0.35, 1 - ((_difficulty - 1) * 0.18));
-    final nextMs =
-        (_initialSpawnInterval.inMilliseconds * multiplier).round();
-    final candidate = Duration(milliseconds: nextMs);
-    return candidate < _minSpawnInterval ? _minSpawnInterval : candidate;
+    _isGameOver = true;
+    pauseEngine();
+    overlays.add('gameOver');
   }
 
   int get _selectedHoleIndex {
-    // Map tilt (-8..8) to grid index (0.._gridSize-1).
     final normX = ((_tiltX / _tiltRange) + 1) / 2;
-    final normY = ((-_tiltY / _tiltRange) + 1) / 2; // invert Y for UI
+    final normY = ((-_tiltY / _tiltRange) + 1) / 2;
     final col = (normX * _gridSize).clamp(0, _gridSize - 0.001).floor();
     final row = (normY * _gridSize).clamp(0, _gridSize - 0.001).floor();
     return row * _gridSize + col;
   }
 
+  double get elapsedSeconds => _elapsed;
+
+  double get _currentSpawnInterval {
+    final multiplier = max(0.35, 1 - ((_difficulty - 1) * 0.18));
+    final next = (_initialSpawnInterval.inMilliseconds * multiplier).round();
+    final candidate = next / 1000;
+    return candidate < _minSpawnInterval.inMilliseconds / 1000
+        ? _minSpawnInterval.inMilliseconds / 1000
+        : candidate;
+  }
+}
+
+class _HudState {
+  const _HudState({
+    required this.score,
+    required this.streak,
+    required this.lives,
+    required this.difficulty,
+    required this.tempoMs,
+    required this.paused,
+  });
+
+  final int score;
+  final int streak;
+  final int lives;
+  final double difficulty;
+  final int tempoMs;
+  final bool paused;
+}
+
+class _HudOverlay extends StatelessWidget {
+  const _HudOverlay(this.game);
+
+  final MoleSmashRhythmGame game;
+
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final selectedIndex = _selectedHoleIndex;
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Mole Smash Rhythm'),
-        actions: [
-          IconButton(
-            icon: Icon(_isPaused ? Icons.play_arrow : Icons.pause),
-            onPressed: _isGameOver ? null : _togglePause,
-            tooltip: _isPaused ? 'Wznów' : 'Pauza',
+    return Align(
+      alignment: Alignment.topCenter,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.45),
+            borderRadius: BorderRadius.circular(16),
           ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _restartGame,
-            tooltip: 'Restart',
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                _ScoreTile(
-                  label: 'Wynik',
-                  value: _score.toString(),
-                  icon: Icons.bolt,
-                  color: theme.colorScheme.primary,
-                ),
-                _ScoreTile(
-                  label: 'Streak',
-                  value: 'x$_streak',
-                  icon: Icons.trending_up,
-                  color: theme.colorScheme.secondary,
-                ),
-                _ScoreTile(
-                  label: 'Życia',
-                  value: '$_lives',
-                  icon: Icons.favorite,
-                  color: Colors.pink,
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text('Poziom: ${_difficulty.toStringAsFixed(1)}'),
-                Text('Tempo: ${_currentSpawnInterval.inMilliseconds} ms'),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final size = min(constraints.maxWidth, constraints.maxHeight);
-                final cellSize = size / _gridSize;
-                return Center(
-                  child: SizedBox(
-                    width: size,
-                    height: size,
-                    child: Stack(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: ValueListenableBuilder<_HudState>(
+              valueListenable: game.hud,
+              builder: (context, state, _) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        GridView.builder(
-                          physics: const NeverScrollableScrollPhysics(),
-                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: _gridSize,
-                          ),
-                          itemCount: _gridSize * _gridSize,
-                          itemBuilder: (context, index) {
-                            final mole = _activeMoles[index];
-                            final isSelected = index == selectedIndex;
-                            return _MoleCell(
-                              isActive: mole != null,
-                              isSelected: isSelected,
-                              progress: mole == null
-                                  ? 0
-                                  : ((_elapsed - mole.spawnedAt).inMilliseconds /
-                                          _moleLifetime.inMilliseconds)
-                                      .clamp(0.0, 1.0),
-                            );
-                          },
+                        _statTile('Wynik', state.score.toString(), Icons.bolt),
+                        _statTile('Streak', 'x${state.streak}', Icons.trending_up),
+                        _statTile('Życia', state.lives.toString(), Icons.favorite),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Text('Poziom: ${state.difficulty.toStringAsFixed(1)}', style: _labelStyle),
+                        const SizedBox(width: 12),
+                        Text('Tempo: ${state.tempoMs} ms', style: _labelStyle),
+                        const Spacer(),
+                        IconButton(
+                          onPressed: game.togglePause,
+                          icon: Icon(state.paused ? Icons.play_arrow : Icons.pause),
+                          tooltip: state.paused ? 'Wznów' : 'Pauza',
+                          color: Colors.white,
                         ),
-                        Positioned(
-                          left: (selectedIndex % _gridSize) * cellSize,
-                          top: (selectedIndex ~/ _gridSize) * cellSize,
-                          child: IgnorePointer(
-                            child: SizedBox(
-                              width: cellSize,
-                              height: cellSize,
-                              child: AnimatedOpacity(
-                                duration: const Duration(milliseconds: 120),
-                                opacity: _isPaused ? 0.3 : 1,
-                                child: Container(
-                                  margin: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    border: Border.all(
-                                      color: theme.colorScheme.primary,
-                                      width: 3,
-                                    ),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
+                        IconButton(
+                          onPressed: game.restart,
+                          icon: const Icon(Icons.refresh),
+                          tooltip: 'Restart',
+                          color: Colors.white,
                         ),
                       ],
                     ),
-                  ),
+                  ],
                 );
               },
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text(
-              _isGameOver
-                  ? 'Koniec gry! Naciśnij restart, aby zagrać ponownie.'
-                  : 'Wychyl platformę, aby celować, i dynamicznie naciśnij, aby trafić krecika.',
+        ),
+      ),
+    );
+  }
+
+  static Widget _statTile(String label, String value, IconData icon) {
+    return Row(
+      children: [
+        Icon(icon, color: Colors.white),
+        const SizedBox(width: 6),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: _labelStyle),
+            Text(value, style: _valueStyle),
+          ],
+        ),
+      ],
+    );
+  }
+
+  static const TextStyle _labelStyle = TextStyle(
+    color: Colors.white70,
+    fontSize: 13,
+  );
+
+  static const TextStyle _valueStyle = TextStyle(
+    color: Colors.white,
+    fontSize: 18,
+    fontWeight: FontWeight.bold,
+  );
+}
+
+class _GameOverOverlay extends StatelessWidget {
+  const _GameOverOverlay({required this.game});
+
+  final MoleSmashRhythmGame game;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Colors.black.withOpacity(0.6),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Koniec gry!'
+              '\nWychyl platformę, aby celować, i uderz, aby trafić krecika.',
               textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+              ),
             ),
-          ),
-        ],
+            const SizedBox(height: 20),
+            FilledButton.icon(
+              onPressed: game.restart,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Zagraj ponownie'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -333,105 +464,5 @@ class _MoleSmashRhythmScreenState extends State<MoleSmashRhythmScreen>
 class _Mole {
   _Mole({required this.spawnedAt});
 
-  final Duration spawnedAt;
-}
-
-class _MoleCell extends StatelessWidget {
-  const _MoleCell({
-    required this.isActive,
-    required this.isSelected,
-    required this.progress,
-  });
-
-  final bool isActive;
-  final bool isSelected;
-  final double progress;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.all(8.0),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        decoration: BoxDecoration(
-          color: isActive
-              ? Color.lerp(Colors.greenAccent, Colors.redAccent, progress)
-              : theme.colorScheme.surfaceVariant,
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            if (isActive)
-              BoxShadow(
-                color: Colors.black.withOpacity(0.15),
-                blurRadius: 8,
-                offset: const Offset(0, 4),
-              ),
-          ],
-          border: Border.all(
-            color: isSelected
-                ? theme.colorScheme.primary
-                : theme.colorScheme.outlineVariant,
-            width: isSelected ? 3 : 1,
-          ),
-        ),
-        child: Center(
-          child: isActive
-              ? Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(Icons.pest_control, size: 32),
-                    Text('${((1 - progress) * 100).clamp(0, 99).round()}%'),
-                  ],
-                )
-              : const Icon(Icons.circle_outlined),
-        ),
-      ),
-    );
-  }
-}
-
-class _ScoreTile extends StatelessWidget {
-  const _ScoreTile({
-    required this.label,
-    required this.value,
-    required this.icon,
-    required this.color,
-  });
-
-  final String label;
-  final String value;
-  final IconData icon;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, color: color),
-          const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: Theme.of(context).textTheme.labelMedium,
-              ),
-              Text(
-                value,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
+  final double spawnedAt;
 }
